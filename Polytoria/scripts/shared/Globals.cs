@@ -19,7 +19,6 @@ using System.Threading.Tasks;
 using Mesh = Godot.Mesh;
 using System.Runtime.CompilerServices;
 using System.Diagnostics.CodeAnalysis;
-using System.Reflection.Metadata;
 
 namespace Polytoria.Shared;
 
@@ -54,8 +53,10 @@ public sealed partial class Globals : Node
 		Singleton = this;
 	}
 
-	public readonly static Dictionary<string, PackedScene> CachedScenes = [];
-	private static readonly Dictionary<string, PackedScene> _scenesCache = [];
+	// Unified scene cache
+	// It was previously split between CachedScenes (public) and _scenesCache
+	// (private), which are two dictionaries doing the exact same job.
+	internal static readonly Dictionary<string, PackedScene> _scenesCache = [];
 #if CREATOR
 	private static readonly Dictionary<string, PackedScene> _propertiesCache = [];
 	private static readonly Dictionary<string, PackedScene> _subViewPropertiesCache = [];
@@ -64,11 +65,29 @@ public sealed partial class Globals : Node
 	private static readonly Dictionary<string, Texture2D> _uiIconsCache = [];
 	private static readonly Dictionary<string, (Mesh, Shape3D)> _shapesCache = [];
 	private static readonly Dictionary<string, Material> _skyboxesCache = [];
-
 	private static readonly Dictionary<(Part.PartMaterialEnum, bool), Material> _materialCache = [];
+	
+	// ConditionalWeakTable keeps its keys weakly and is actually designed for attaching
+	// temporary metadata to objects; so it's not the right choice for a permanent cache.
+	private static readonly Dictionary<string, Type> _typesCache = [];
+	
+	private static readonly Dictionary<string, string> _platformExtensions = new()
+	{
+		["windows"] = "dll",
+		["macos"]   = "dylib",
+		["linux"]   = "so",
+	};
+	
+	private static readonly Dictionary<string, string> _libraryPaths = new()
+	{
+		["discord_game_sdk"] = "native/discord",
+		["Luau.Compiler"]    = "native/Luau.Compiler",
+		["Luau.VM"]          = "native/Luau.VM",
+	};
+	
+	private static string? _resolvedPlatform;
 
 	private static bool _isExiting = false;
-
 	public static bool IsExiting => _isExiting;
 
 	public const string BuiltInFontLocation = "res://assets/fonts/built-in";
@@ -124,14 +143,12 @@ public sealed partial class Globals : Node
 	public static event Action<double>? GodotPhysicsProcess;
 	public static event Action<int>? GodotNotification;
 
-	private readonly static ConditionalWeakTable<string, Type> _typesCache = [];
-
 	static Globals()
 	{
 		NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), DllImportResolver);
 
 		// Register asset types
-		// TODO: Maybe this could be automated via source generation?
+		// TODO: Maybe this could be automated via source generation? (Yes)
 		PTImageAsset.RegisterAsset();
 		PTAudioAsset.RegisterAsset();
 		PTMeshAsset.RegisterAsset();
@@ -154,8 +171,9 @@ public sealed partial class Globals : Node
 
 		GDAvailable = true;
 
+		_resolvedPlatform = ResolveCurrentPlatform();
+		
 		AppVersion = (string)ProjectSettings.GetSetting("application/config/version");
-
 #if !PRODUCTION
 		AppVersion += "+dev";
 #endif
@@ -235,20 +253,20 @@ public sealed partial class Globals : Node
 		if (_typesCache.TryGetValue(className, out Type? t))
 			return t;
 
-		string[] namespacesToCheck =
+		ReadOnlySpan<string> namespacesToCheck =
 		[
 			"Polytoria.Datamodel.",
-		"Polytoria.Datamodel.Services.",
-		"Polytoria.Datamodel.Creator.",
-		"Polytoria.Datamodel.Resources.",
-	];
+			"Polytoria.Datamodel.Services.",
+			"Polytoria.Datamodel.Creator.",
+			"Polytoria.Datamodel.Resources.",
+		];
 
 		foreach (string ns in namespacesToCheck)
 		{
 			t = Type.GetType(ns + className);
 			if (t != null)
 			{
-				_typesCache.AddOrUpdate(className, t);
+				_typesCache[className] = t;
 				return t;
 			}
 		}
@@ -258,27 +276,37 @@ public sealed partial class Globals : Node
 	public static NetworkedObject? LoadNetworkedObject(string className, World? root = null, Action<NetworkedObject>? preInit = null)
 	{
 		Type? type = GetTypeByName(className);
-		if (type != null)
-		{
-			object? obj = Activator.CreateInstance(type);
-			if (obj is NetworkedObject netObj)
-			{
-				netObj.NameOverride = className;
-				preInit?.Invoke(netObj);
-				netObj.Root = root!;
-				return netObj;
-			}
-		}
-
-		return null;
+		if (type == null) return null;
+		
+		object? obj = Activator.CreateInstance(type);
+		if (obj is not NetworkedObject netObj) return null;
+		
+		netObj.NameOverride = className;
+		preInit?.Invoke(netObj);
+		netObj.Root = root!;
+		return netObj;
 	}
 
 	public static Node? LoadNetworkedObjectScene(string className)
 	{
 		PackedScene? packedScene = LoadCachedResource(_scenesCache, className, $"{DatamodelScenesPath}{className}.tscn");
 		Node? scene = packedScene?.Instantiate<Node>();
-		scene?.SceneFilePath = "";
+		if (scene != null) scene.SceneFilePath = "";
 		return scene;
+	}
+	
+	/// <summary>
+	/// Load and cache a scene by its resource path.
+	/// </summary>
+	public static T CreateInstanceFromScene<T>(string path) where T : Node
+	{
+		if (!_scenesCache.TryGetValue(path, out PackedScene? scene))
+		{
+			scene = ResourceLoader.Load<PackedScene>(path, null, ResourceLoader.CacheMode.IgnoreDeep);
+			_scenesCache[path] = scene;
+		}
+		
+		return scene.Instantiate<T>();
 	}
 
 #if CREATOR
@@ -313,15 +341,11 @@ public sealed partial class Globals : Node
 
 #if CREATOR
 	public static Texture2D LoadIcon(string className)
-	{
-		return LoadCachedTexture(_iconsCache, className, DatamodelIconsPath, "Unknown");
-	}
+		=> LoadCachedTexture(_iconsCache, className, DatamodelIconsPath, "Unknown");
 #endif
 
 	public static Texture2D LoadUIIcon(string iconName)
-	{
-		return LoadCachedTexture(_uiIconsCache, iconName, UIIconsPath, "empty");
-	}
+		=> LoadCachedTexture(_uiIconsCache, iconName, UIIconsPath, "empty");
 
 	public static (Mesh, Shape3D) LoadShape(string shapeName)
 	{
@@ -331,7 +355,8 @@ public sealed partial class Globals : Node
 		}
 
 		string path = $"{ShapesMeshesPath}{shapeName}.tres";
-		Mesh mesh = ResourceLoader.Load<Mesh>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) ?? throw new KeyNotFoundException($"Shape '{shapeName}' was not found at '{path}'.");
+		Mesh mesh = ResourceLoader.Load<Mesh>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+			?? throw new KeyNotFoundException($"Shape '{shapeName}' was not found at '{path}'.");
 		Shape3D shape = CreateShape(mesh, shapeName);
 		(Mesh, Shape3D) loadedShape = (mesh, shape);
 		_shapesCache[shapeName] = loadedShape;
@@ -347,10 +372,13 @@ public sealed partial class Globals : Node
 			return mat;
 		}
 
-		mat = ResourceLoader.Load<Material>($"res://resources/materials/parts/{material}.tres", cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
+		mat = ResourceLoader.Load<Material>($"res://resources/materials/parts/{material}.tres", 
+			cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
 		if (!isOpaque && mat is ShaderMaterial shadMat && shadMat.Shader.ResourcePath.EndsWith("part.gdshader"))
 		{
-			Shader shader = ResourceLoader.Load<Shader>("res://resources/shaders/part/part_transparent.gdshader", cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
+			Shader shader = ResourceLoader.Load<Shader>(
+				"res://resources/shaders/part/part_transparent.gdshader", 
+				cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
 			shadMat.Shader = shader;
 		}
 		_materialCache[(material, isOpaque)] = mat;
@@ -369,11 +397,10 @@ public sealed partial class Globals : Node
 	}
 
 	public static Material LoadSkybox(string materialName)
-	{
-		return ForceLoadResource(_skyboxesCache, materialName, $"{SkyboxesPath}{materialName}.tres");
-	}
+		=> ForceLoadResource(_skyboxesCache, materialName, $"{SkyboxesPath}{materialName}.tres");
 
-	private static TResource? LoadCachedResource<TResource>(Dictionary<string, TResource> cache, string key, string path) where TResource : Resource
+	private static TResource? LoadCachedResource<TResource>(Dictionary<string, TResource> cache, string key, string path) 
+		where TResource : Resource
 	{
 		if (cache.TryGetValue(key, out TResource? cachedResource))
 		{
@@ -385,15 +412,16 @@ public sealed partial class Globals : Node
 			return null;
 		}
 
-		TResource resource = ResourceLoader.Load<TResource>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) ?? throw new InvalidOperationException($"Failed to load resource at '{path}'.");
+		TResource resource = ResourceLoader.Load<TResource>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+			?? throw new InvalidOperationException($"Failed to load resource at '{path}'.");
 		cache[key] = resource;
 		return resource;
 	}
 
-	private static TResource ForceLoadResource<TResource>(Dictionary<string, TResource> cache, string key, string path) where TResource : Resource
-	{
-		return LoadCachedResource(cache, key, path) ?? throw new KeyNotFoundException($"Resource '{key}' was not found at '{path}'.");
-	}
+	private static TResource ForceLoadResource<TResource>(Dictionary<string, TResource> cache, string key, string path) 
+		where TResource : Resource
+		=> LoadCachedResource(cache, key, path) 
+			?? throw new KeyNotFoundException($"Resource '{key}' was not found at '{path}'.");
 
 	private static Texture2D LoadCachedTexture(Dictionary<string, Texture2D> cache, string key, string directoryPath, string fallbackKey)
 	{
@@ -415,7 +443,8 @@ public sealed partial class Globals : Node
 			return fallbackTexture;
 		}
 
-		Texture2D texture = ResourceLoader.Load<Texture2D>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) ?? throw new InvalidOperationException($"Failed to load texture at '{path}'.");
+		Texture2D texture = ResourceLoader.Load<Texture2D>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+			?? throw new InvalidOperationException($"Failed to load texture at '{path}'.");
 		cache[key] = texture;
 		return texture;
 	}
@@ -439,7 +468,7 @@ public sealed partial class Globals : Node
 
 	private static Shape3D CreateShape(Mesh mesh, string shapeName)
 	{
-		if (shapeName == "Truss" || shapeName == "Frame")
+		if (shapeName is "Truss" or "Frame")
 		{
 			return new BoxShape3D();
 		}
@@ -463,20 +492,18 @@ public sealed partial class Globals : Node
 		{
 			string arg = args[i];
 
-			if (arg.StartsWith('-'))
+			if (!arg.StartsWith('-')) continue;
+			
+			string key = arg.TrimStart('-');
+			string value = "";
+
+			// If next arg exists and is not another flag, treat it as value
+			if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
 			{
-				string key = arg.TrimStart('-');
-				string value = "";
-
-				// If next arg exists and is not another flag, treat it as value
-				if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
-				{
-					value = args[i + 1];
-					i++;
-				}
-
-				result[key] = value;
+				value = args[++i];
 			}
+
+			result[key] = value;
 		}
 
 		return result;
@@ -492,26 +519,42 @@ public sealed partial class Globals : Node
 		base._Notification(what);
 	}
 
-	public async Task WaitAsync(float time)
+	/// <summary>
+	/// Wait about <paramref name="time"/> seconds
+	/// It uses SceneTreeTimer for a single deferred signal instead of polling once every frame
+	/// </summary>
+	public Task WaitAsync(float time)
 	{
-		var start = Time.GetTicksUsec();
-		var target = start + (ulong)(time * 1_000_000.0);
-
-		while (Time.GetTicksUsec() < target)
-			await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+		var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		SceneTreeTimer timer = GetTree().CreateTimer(time);
+		timer.Timeout += () => tcs.TrySetResult();
+		return tcs.Task;
 	}
 
-	public async Task WaitFrame()
-	{
-		await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-	}
+	public Task WaitFrame()
+		=> ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame).AsTask();
 
-	public async Task WaitPhysicsFrame()
-	{
-		await ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame);
-	}
-
+	public Task WaitPhysicsFrame()
+		=> ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame).AsTask();
+	
+	/// <summary>
+	/// Declared async Task internally; basically the public void entry point makes sure
+	/// that any unseen exception is at least logged instead of being silently dropped.
+	/// </summary>
 	public async void Quit(bool force = false, int code = 0)
+	{
+		try
+		{
+			await QuitAsync(force, code);
+		}
+		catch (Exception ex)
+		{
+			PT.PrintErr("Unhandled exception during quit: ", ex);
+			GetTree().Quit(code);
+		}
+	}
+	
+	public async Task QuitAsync(bool force, int code)
 	{
 #if CREATOR
 		// Request confirmation from interface
@@ -533,14 +576,11 @@ public sealed partial class Globals : Node
 		{
 			PT.PrintWarn("Error present when quitting: ", ex);
 		}
-		Callable.From(() =>
-		{
-			CurrentAppEntryNode?.QueueFree();
-			Callable.From(() =>
-			{
-				GetTree().Quit(code);
-			}).CallDeferred();
-		}).CallDeferred();
+		
+		// QueueFree already defers the actual freeing process until the end of the frame,
+		// so just a single CallDeferred for Quit() is enough.
+		CurrentAppEntryNode?.QueueFree();
+		Callable.From(() => GetTree().Quit(code)).CallDeferred();
 	}
 
 	public enum AppEntryEnum
@@ -582,17 +622,11 @@ public sealed partial class Globals : Node
 		// Set app icon
 		if (iconToLoad != null)
 		{
-			string platform = "windows";
-
-			if (OS.HasFeature("macos"))
+			string platform = _resolvedPlatform switch
 			{
-				platform = "mac";
-			}
-
-			if (OS.HasFeature("linux"))
-			{
-				platform = "linux";
-			}
+				"macos" => "mac",
+				_ => _resolvedPlatform ?? "windows",
+			};
 
 			string iconPath = $"res://assets/textures/logo/{iconToLoad}/{platform}.png";
 			DisplayServer.SetIcon(GD.Load<Image>(iconPath));
@@ -605,18 +639,12 @@ public sealed partial class Globals : Node
 
 	private static IntPtr DllImportResolver(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
 	{
-		if (!IsInGDEditor)
+		if (!IsInGDEditor || IsMobileBuild)
 		{
 			return IntPtr.Zero;
 		}
 
-		if (IsMobileBuild)
-		{
-			// Use the mobile default resolver
-			return IntPtr.Zero;
-		}
-
-		string platform = ResolveCurrentPlatform();
+		string platform = _resolvedPlatform ?? ResolveCurrentPlatform();
 
 		if (!OS.HasFeature("x86_64"))
 		{
@@ -626,90 +654,39 @@ public sealed partial class Globals : Node
 			}
 
 			// i wasted an hour finding this damn return statement... -jeweleyed
-			if (platform == "android" || platform == "ios")
+			// lmao this happens to the best of us... -yuexin
+			if (platform is "android" or "ios")
 			{
 				return IntPtr.Zero;
 			}
 		}
 
 		string? dllPath = ResolveDllPath(libraryName, platform);
-
-		if (dllPath == null)
-		{
-			return IntPtr.Zero;
-		}
-
-		return NativeLibrary.Load(dllPath, assembly, searchPath);
+		return dllPath == null ? IntPtr.Zero : NativeLibrary.Load(dllPath, assembly, searchPath);
 	}
 
 	internal static string ResolveCurrentPlatform()
 	{
-		string platform;
-
-		if (OS.HasFeature("windows"))
-		{
-			platform = "windows";
-		}
-		else if (OS.HasFeature("macos"))
-		{
-			platform = "macos";
-		}
-		else if (OS.HasFeature("android"))
-		{
-			platform = "android";
-		}
-		else
-		{
-			platform = "linux";
-		}
-
-		return platform;
+		if (OS.HasFeature("windows")) return "windows";
+		if (OS.HasFeature("macos")) return "macos";
+		if (OS.HasFeature("android")) return "android";
+		return "linux";
 	}
 
 	internal static string? ResolveDllPath(string libraryName, string platform)
 	{
-		Dictionary<string, string> platformExtensions = new()
-		{
-			["windows"] = "dll",
-			["macos"] = "dylib",
-			["linux"] = "so"
-		};
-
-		Dictionary<string, string> libraryPaths = new()
-		{
-			["discord_game_sdk"] = "native/discord",
-			["Luau.Compiler"] = "native/Luau.Compiler",
-			["Luau.VM"] = "native/Luau.VM",
-		};
-
-		if (!libraryPaths.TryGetValue(libraryName, out string? pathb))
-		{
+		if (!_libraryPaths.TryGetValue(libraryName, out string? pathBase))
 			return null;
-		}
-
+			
+		if (!_platformExtensions.TryGetValue(platform, out string? ext))
+			return null;
+			
 		if (!IsInGDEditor)
-		{
-			return $"{libraryName}.{platformExtensions[platform]}";
-		}
-
-		if (IsServerBuild)
-		{
-			return $"native/{platform}/{libraryName}.{platformExtensions[platform]}";
-		}
-		else
-		{
-			return $"{pathb}/{platform}/{libraryName}.{platformExtensions[platform]}";
-		}
-	}
-
-	// Workaround for instance create
-	public static T CreateInstanceFromScene<T>(string path) where T : Node
-	{
-		if (CachedScenes.ContainsKey(path) == false)
-		{
-			CachedScenes[path] = ResourceLoader.Load<PackedScene>(path, null, ResourceLoader.CacheMode.IgnoreDeep);
-		}
-		return CachedScenes[path].Instantiate<T>();
+			return $"{libraryName}.{ext}";
+			
+		return IsServerBuild
+			? $"native/{platform}/{libraryName}.{ext}"
+			: $"{pathBase}/{platform}/{libraryName}.{ext}";
 	}
 
 	[JsonSerializable(typeof(string))]
