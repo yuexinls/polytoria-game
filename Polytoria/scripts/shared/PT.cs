@@ -19,7 +19,7 @@ public static class PT
 
 	static PT()
 	{
-		OwnerThreadId = Environment.CurrentManagedThreadId;
+		OwnerThreadId = System.Environment.CurrentManagedThreadId;
 	}
 	
 	/// <summary>
@@ -153,7 +153,7 @@ public static class PT
 	}
 
 	public static bool IsMainThread()
-		=> Environment.CurrentManagedThreadId == OwnerThreadId;
+		=> System.Environment.CurrentManagedThreadId == OwnerThreadId;
 	
 	public static void CallOnMainThread(Action a)
 	{

@@ -138,9 +138,10 @@ public partial class RendererViewport : SubViewport
 		RenderTargetClearMode = ClearMode.Once;
 		RenderTargetUpdateMode = UpdateMode.Once;
 		
-		Task frameSignal = ToSignal(
-			RenderingServer.Singleton,
-			RenderingServer.SignalName.FramePostDraw).AsTask();
+		var _tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw)
+			.OnCompleted(() => _tcs.TrySetResult());
+		Task frameSignal = _tcs.Task;
 			
 		if (ct.CanBeCanceled)
 		{

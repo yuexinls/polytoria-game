@@ -532,10 +532,18 @@ public sealed partial class Globals : Node
 	}
 
 	public Task WaitFrame()
-		=> ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame).AsTask();
+	{
+		var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame).OnCompleted(() => tcs.TrySetResult());
+		return tcs.Task;
+	}
 
 	public Task WaitPhysicsFrame()
-		=> ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame).AsTask();
+	{
+		var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+		ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame).OnCompleted(() => tcs.TrySetResult());
+		return tcs.Task;
+	}
 	
 	/// <summary>
 	/// Declared async Task internally; basically the public void entry point makes sure

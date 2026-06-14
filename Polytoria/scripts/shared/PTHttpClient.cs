@@ -45,8 +45,8 @@ public partial class PTHttpClient
 		if (Globals.UseNoHttp) 
 			throw new HttpRequestException("Http is disabled via feature flag");
 
-		int headerCount = DefaultRequestHeaders.Count + msg.Headers.Count;
-		if (msg.Content != null) headerCount += msg.Content.Headers.Count;
+		const int TypicalHttpHeaders = 8;
+		int headerCount = DefaultRequestHeaders.Count + TypicalHttpHeaders;
 		List<string> headers = new(headerCount);
 
 		foreach (var (k, v) in DefaultRequestHeaders)
@@ -113,7 +113,7 @@ public partial class PTHttpClient
 						tcs.SetResult(response);
 					};
 					
-					ct.Regiser(() =>
+					ct.Register(() =>
 					{
 						req.CancelRequest();
 						req.QueueFree();
@@ -164,7 +164,7 @@ public partial class PTHttpClient
 	public async Task<T?> GetFromJsonAsync<T>(string url, JsonTypeInfo<T> jsonTypeInfo,
 		CancellationToken ct = default)
 	{
-		var msg = new HttpRequestMessage(HttpMethod.Get, url)
+		var msg = new HttpRequestMessage(HttpMethod.Get, url);
 		msg.Headers.TryAddWithoutValidation("Accept", "application/json");
 
 		using HttpResponseMessage response = await SendAsync(msg, ct);
@@ -185,7 +185,7 @@ public partial class PTHttpClient
 	public Task<HttpResponseMessage> PostAsync(string url, HttpContent content,
 		CancellationToken ct = default)
 	{
-		var msg = new HttpRequestMessage(HttpMethod.Post, url) { Content = content }
+		var msg = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
 
 		return SendAsync(msg, ct);
 	}
