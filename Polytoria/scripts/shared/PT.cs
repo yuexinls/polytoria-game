@@ -9,6 +9,7 @@ using Polytoria.Scripting;
 using Polytoria.Creator.UI;
 #endif
 using System;
+using System.Text;
 
 namespace Polytoria.Shared;
 
@@ -18,113 +19,124 @@ public static class PT
 
 	static PT()
 	{
-		OwnerThreadId = System.Environment.CurrentManagedThreadId;
+		OwnerThreadId = Environment.CurrentManagedThreadId;
 	}
-
-	public static void Print(params object?[] str)
+	
+	/// <summary>
+	/// Joins a params array into one single string without creating any extra
+	/// allocations for the single-element case
+	/// </summary>
+	private static string BuildMessage(object?[] parts)
 	{
-		string result = "";
-		foreach (object? s in str)
-		{
-			result += s?.ToString();
-		}
+		if (parts.Length == 1)
+			return parts[0]?.ToString() ?? string.Empty;
+			
+		// StringBuilder avoids O(n²) string allocations
+		StringBuilder sb = new();
+		foreach (object? part in parts)
+			sb.Append(part);
+		return sb.ToString();
+	}
+	
+	/// <summary>
+	/// Raw print to GD or console fallback
+	/// </summary>
+	private static void WriteOutput(string message, LogDispatcher.LogTypeEnum logType)
+	{
 		if (Globals.GDAvailable)
 		{
-			GD.Print(result);
+			switch (logType)
+			{
+				case LogDispatcher.LogTypeEnum.Warning:
+					GD.PrintRich($"[color=yellow][WARN] {message}[/color]");
+					break;
+				case LogDispatcher.LogTypeEnum.Error:
+					GD.PrintRich($"[color=red][ERROR] {message}[/color]");
+					GD.PushError(message);
+					break;
+				default:
+					GD.Print(message);
+					break;
+			}
 		}
 		else
 		{
-			Console.WriteLine("[WARN] " + result);
+			string prefix = logType switch
+			{
+				LogDispatcher.LogTypeEnum.Warning => "[WARN] ",
+				LogDispatcher.LogTypeEnum.Error   => "[ERROR] ",
+				_                                 => "[WARN] ",
+			};
+			Console.WriteLine(prefix + message);
 		}
-		DispatchLog(new() { Content = result, LogType = LogDispatcher.LogTypeEnum.Info });
+	}
+
+	/// <summary>Single argument fast path with no array allocation.</summary>
+	public static void Print(string message)
+	{
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Info);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Info });
+	}
+	
+	public static void Print(params object?[] str)
+	{
+		string message = BuildMessage(str);
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Info);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Info });
 	}
 
 	/// <summary>
-	/// Verbose printing
+	/// Verbose printing with no log dispatch
+	/// The V suffix intentionally skips DispatchLog
 	/// </summary>
-	/// <param name="str"></param>
+	public static void PrintV(string message)
+		=> WriteOutput(message, LogDispatcher.LogTypeEnum.Info);
+		
 	public static void PrintV(params object?[] str)
-	{
-		string result = "";
-		foreach (object? s in str)
-		{
-			result += s?.ToString();
-		}
-		if (Globals.GDAvailable)
-		{
-			GD.Print(result);
-		}
-		else
-		{
-			Console.WriteLine("[WARN] " + result);
-		}
-	}
+		=> WriteOutput(BuildMessage(str), LogDispatcher.LogTypeEnum.Info);
 
+	public static void PrintWarn(string message)
+	{
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Warning);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Warning });
+	}
+	
 	public static void PrintWarn(params object?[] str)
 	{
-		string result = "";
-		foreach (object? s in str)
-		{
-			result += s?.ToString();
-		}
-		if (Globals.GDAvailable)
-		{
-			GD.PrintRich($"[color=yellow][WARN] {result}[/color]");
-		}
-		else
-		{
-			Console.WriteLine("[WARN] " + result);
-		}
-		DispatchLog(new() { Content = result, LogType = LogDispatcher.LogTypeEnum.Warning });
+		string message = BuildMessage(str);
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Warning);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Warning });
+	}
+	
+	public static void PrintErr(string message)
+	{
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Error);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Error });
 	}
 
 	public static void PrintErr(params object?[] str)
 	{
-		string result = "";
-		foreach (object? s in str)
-		{
-			result += s?.ToString();
-		}
-		if (Globals.GDAvailable)
-		{
-			GD.PrintRich($"[color=red][ERROR] {result}[/color]");
-			GD.PushError(result);
-		}
-		else
-		{
-			Console.WriteLine("[ERROR] " + result);
-		}
-		DispatchLog(new() { Content = result, LogType = LogDispatcher.LogTypeEnum.Error });
+		string message = BuildMessage(str);
+		WriteOutput(message, LogDispatcher.LogTypeEnum.Error);
+		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Error });
 	}
 
 	/// <summary>
-	/// Print error verbose
+	/// Print error verbose with no log dispatch
 	/// </summary>
 	/// <param name="str"></param>
+	public static void PrintErrV(string message)
+		=> WriteOutput(message, LogDispatcher.LogTypeEnum.Error);
+	
 	public static void PrintErrV(params object?[] str)
-	{
-		string result = "";
-		foreach (object? s in str)
-		{
-			result += s?.ToString();
-		}
-		if (Globals.GDAvailable)
-		{
-			GD.PrintRich($"[color=red][ERROR] {result}[/color]");
-			GD.PushError(result);
-		}
-		else
-		{
-			Console.WriteLine("[ERROR] " + result);
-		}
-	}
+		=> WriteOutput(BuildMessage(str), LogDispatcher.LogTypeEnum.Error);
 
 	public static void DispatchLog(LogDispatcher.LogData data)
 	{
 		try
 		{
 #if CREATOR
-			// TODO: Turn this into an event instead?
+			// TODO: Turn this into an event instead? (Yes)
 			CallOnMainThread(() =>
 			{
 				DebugConsole.Singleton?.NewLog(data);
@@ -136,22 +148,13 @@ public static class PT
 		catch (Exception ex)
 		{
 			// Failed to dispatch log
-			if (Globals.GDAvailable)
-			{
-				GD.PrintRich($"[color=red][ERROR] [Log Dispatch] {ex}[/color]");
-			}
-			else
-			{
-				Console.WriteLine("[ERROR] [Log Dispatch] " + ex);
-			}
+			WriteOutput($"[Log Dispatch] {ex}", LogDispatcher.LogTypeEnum.Error);
 		}
 	}
 
 	public static bool IsMainThread()
-	{
-		return System.Environment.CurrentManagedThreadId == OwnerThreadId;
-	}
-
+		=> Environment.CurrentManagedThreadId == OwnerThreadId;
+	
 	public static void CallOnMainThread(Action a)
 	{
 		if (IsMainThread() || !Globals.GDAvailable)
