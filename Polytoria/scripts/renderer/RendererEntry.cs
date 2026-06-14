@@ -18,6 +18,7 @@ public partial class RendererEntry : AppEntry
 
 		RendererViewport viewport = new();
 		AddChild(viewport);
+		viewport.Initialize();
 		viewport.Setup();
 		PT.Print("Viewport setup: ", sw.ElapsedMilliseconds, "ms");
 
