@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 #if !USE_NATIVE_HTTP
 using System;
 using System.Net;
+using System.Threading;
 #endif
 
 namespace Polytoria.Shared;
@@ -19,8 +20,15 @@ namespace Polytoria.Shared;
 public partial class PTHttpClient
 {
 	private const int DefaultDownloadChunkSize = 10000;
+	
 #if USE_NATIVE_HTTP
-	private static readonly HttpClient _httpClient = new();
+	// One shared HttpClient for the process lifetime
+	// SocketsHttpHandler gives explicit control over connection pooling.
+	private static readonly HttpClient _httpClient = new(new SocketsHttpHandler
+	{
+		PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+		MaxConnectionsPerServer  = 20,
+	});
 #endif
 	public Dictionary<string, string> DefaultRequestHeaders { get; set; } = [];
 
@@ -30,148 +38,176 @@ public partial class PTHttpClient
 	}
 
 #if !USE_NATIVE_HTTP
-	public Task<HttpResponseMessage> SendAsync(HttpRequestMessage msg)
+	public Task<HttpResponseMessage> SendAsync(HttpRequestMessage msg,
+		CancellationToken ct = default)
 	{
 		// Check nohttp feature flag
-		if (Globals.UseNoHttp) throw new HttpRequestException("Http is disabled via feature flag");
+		if (Globals.UseNoHttp) 
+			throw new HttpRequestException("Http is disabled via feature flag");
 
-		List<string> headers = [];
+		int headerCount = DefaultRequestHeaders.Count + msg.Headers.Count;
+		if (msg.Content != null) headerCount += msg.Content.Headers.Count;
+		List<string> headers = new(headerCount);
 
-		foreach ((string k, string v) in DefaultRequestHeaders)
-		{
-			headers.Add(k + ": " + v);
-		}
+		foreach (var (k, v) in DefaultRequestHeaders)
+			headers.Add($"{k}: {v}");
 
 		foreach (var item in msg.Headers)
-		{
-			headers.Add(item.Key + ": " + string.Join(", ", item.Value));
-		}
+			headers.Add($"{item.Key}: {string.Join(", ", item.Value)}");
 
 		// Add content headers if present
 		if (msg.Content != null)
-		{
 			foreach (var item in msg.Content.Headers)
-			{
-				headers.Add(item.Key + ": " + string.Join(", ", item.Value));
-			}
-		}
+				headers.Add($"{item.Key}: {string.Join(", ", item.Value)}");
+				
+		string[] headersArray = [.. headers];
 
-		TaskCompletionSource<HttpResponseMessage> tcs = new();
+		TaskCompletionSource<HttpResponseMessage> tcs = 
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		// needs to be callable due to add_child
 		Callable.From(() =>
 		{
-			// Workaround since callable dont support async
-			async void a()
+			// Exceptions inside CallDeferred must be explicitly forwarded to the TCS
+			async Task RunAsync()
 			{
-				byte[] body = msg.Content != null ? await msg.Content.ReadAsByteArrayAsync() : [];
+				try {
+					byte[] body = msg.Content != null 
+						? await msg.Content.ReadAsByteArrayAsync() 
+						: [];
 
-				HttpRequest req = new() { DownloadChunkSize = DefaultDownloadChunkSize };
+					HttpRequest req = new() { DownloadChunkSize = DefaultDownloadChunkSize };
 
-				Globals.Singleton.AddChild(req);
+					Globals.Singleton.AddChild(req);
 
-				req.RequestCompleted += (result, responseCode, responseHeaders, responseBody) =>
-				{
-					HttpResponseMessage response = new((HttpStatusCode)responseCode)
+					req.RequestCompleted += (result, responseCode, responseHeaders, responseBody) =>
 					{
-						Content = new ByteArrayContent(responseBody)
-					};
-
-					foreach (string header in responseHeaders)
-					{
-						string[] parts = header.Split(':', 2);
-						if (parts.Length == 2)
+						// Surface Godot level transport errors as exceptions rather than
+						// letting callers see a 0 status response.
+						if (result != (long)HttpRequest.Result.Success)
 						{
-							response.Headers.TryAddWithoutValidation(parts[0].Trim(), parts[1].Trim());
+							req.QueueFree();
+							tcs.TrySetException(
+								new HttpRequestException($"Godot HttpRequest failed: {(HttpRequest.Result)result}"));
+							return;
 						}
-					}
+						
+						HttpResponseMessage response = new((HttpStatusCode)responseCode)
+						{
+							Content = new ByteArrayContent(responseBody)
+						};
 
-					req.QueueFree();
-					tcs.SetResult(response);
-				};
+						foreach (string header in responseHeaders)
+						{
+							int index = header.IndexOf(':');
+							if (index > 0)
+							{
+								response.Headers.TryAddWithoutValidation(
+									header[..index].Trim(),
+									header[(index + 1)..].Trim()
+								);
+							}
+						}
 
-				Error error = req.RequestRaw(
-					msg.RequestUri?.ToString() ?? throw new InvalidOperationException("URL is null"),
-					[.. headers],
-					Enum.Parse<Godot.HttpClient.Method>(msg.Method.Method.ToLower().Capitalize()),
-					new ReadOnlySpan<byte>(body)
-				);
+						req.QueueFree();
+						tcs.SetResult(response);
+					};
+					
+					ct.Regiser(() =>
+					{
+						req.CancelRequest();
+						req.QueueFree();
+						tcs.TrySetCanceled(ct);
+					});
 
-				if (error != Error.Ok)
+					Error error = req.RequestRaw(
+						msg.RequestUri?.ToString() 
+							?? throw new InvalidOperationException("URL is null"),
+						headersArray,
+						Enum.Parse<Godot.HttpClient.Method>(
+							msg.Method.Method.ToLower().Capitalize()),
+						new ReadOnlySpan<byte>(body));
+
+					if (error != Error.Ok)
+						throw new HttpRequestException($"HttpRequest.RequestRaw error: {error}");
+				}
+				catch (Exception ex)
 				{
-					throw new HttpRequestException($"HttpRequest failed with error: {error}");
+					tcs.TrySetException(ex);
 				}
 			}
 
-			a();
+			_ = RunAsync();
 		}).CallDeferred();
 
 		return tcs.Task;
 	}
 #else
-	public Task<HttpResponseMessage> SendAsync(HttpRequestMessage msg)
+	public Task<HttpResponseMessage> SendAsync(HttpRequestMessage msg,
+		CancellationToken ct = default)
 	{
 		foreach ((string key, string val) in DefaultRequestHeaders)
 		{
 			msg.Headers.TryAddWithoutValidation(key, val);
 		}
-		return _httpClient.SendAsync(msg);
+		return _httpClient.SendAsync(msg, ct);
 	}
 #endif
 
-	public async Task<HttpResponseMessage> GetAsync(string url)
+	public Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct = default)
 	{
-		using HttpRequestMessage msg = new(HttpMethod.Get, url);
-		return await SendAsync(msg);
+		// HttpRequestMessage ownership transfers to SendAsync
+		var msg = new HttpRequestMessage(HttpMethod.Get, url);
+		return SendAsync(msg, ct);
 	}
 
-	public async Task<T?> GetFromJsonAsync<T>(string url, JsonTypeInfo<T> jsonTypeInfo)
+	public async Task<T?> GetFromJsonAsync<T>(string url, JsonTypeInfo<T> jsonTypeInfo,
+		CancellationToken ct = default)
 	{
-		using HttpRequestMessage msg = new(HttpMethod.Get, url);
+		var msg = new HttpRequestMessage(HttpMethod.Get, url)
 		msg.Headers.TryAddWithoutValidation("Accept", "application/json");
 
-		using HttpResponseMessage response = await SendAsync(msg);
+		using HttpResponseMessage response = await SendAsync(msg, ct);
 		response.EnsureSuccessStatusCode();
 
-		string json = await response.Content.ReadAsStringAsync();
+		string json = await response.Content.ReadAsStringAsync(ct);
 		return JsonSerializer.Deserialize(json, jsonTypeInfo);
 	}
 
-	public async Task<byte[]> GetByteArrayAsync(string url)
+	public async Task<byte[]> GetByteArrayAsync(string url, CancellationToken ct = default)
 	{
-		using HttpResponseMessage response = await GetAsync(url);
+		using HttpResponseMessage response = await GetAsync(url, ct);
 		response.EnsureSuccessStatusCode();
-
-		return await response.Content.ReadAsByteArrayAsync();
+		
+		return await response.Content.ReadAsByteArrayAsync(ct);
 	}
 
-	public async Task<HttpResponseMessage> PostAsync(string url, HttpContent content)
+	public Task<HttpResponseMessage> PostAsync(string url, HttpContent content,
+		CancellationToken ct = default)
 	{
-		using HttpRequestMessage msg = new(HttpMethod.Post, url)
-		{
-			Content = content
-		};
+		var msg = new HttpRequestMessage(HttpMethod.Post, url) { Content = content }
 
-		return await SendAsync(msg);
+		return SendAsync(msg, ct);
 	}
 
-	public async Task<HttpResponseMessage> PostAsJsonAsync<T>(string url, T value, JsonTypeInfo<T> jsonTypeInfo)
+	public Task<HttpResponseMessage> PostAsJsonAsync<T>(string url, T value, 
+		JsonTypeInfo<T> jsonTypeInfo, CancellationToken ct = default)
 	{
 		string json = JsonSerializer.Serialize(value, jsonTypeInfo);
 
-		using HttpRequestMessage msg = new(HttpMethod.Post, url)
+		var msg = new HttpRequestMessage(HttpMethod.Post, url)
 		{
 			Content = new StringContent(json, Encoding.UTF8, "application/json")
 		};
 
-		return await SendAsync(msg);
+		return SendAsync(msg, ct);
 	}
 
-	public async Task<string> GetStringAsync(string url)
+	public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
 	{
-		using HttpResponseMessage response = await GetAsync(url);
+		using HttpResponseMessage response = await GetAsync(url, ct);
 		response.EnsureSuccessStatusCode();
 
-		return await response.Content.ReadAsStringAsync();
+		return await response.Content.ReadAsStringAsync(ct);
 	}
 }
