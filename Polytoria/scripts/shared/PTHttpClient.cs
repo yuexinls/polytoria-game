@@ -20,7 +20,7 @@ namespace Polytoria.Shared;
 public partial class PTHttpClient
 {
 	private const int DefaultDownloadChunkSize = 10000;
-	
+
 #if USE_NATIVE_HTTP
 	// One shared HttpClient for the process lifetime
 	// SocketsHttpHandler gives explicit control over connection pooling.
@@ -42,7 +42,7 @@ public partial class PTHttpClient
 		CancellationToken ct = default)
 	{
 		// Check nohttp feature flag
-		if (Globals.UseNoHttp) 
+		if (Globals.UseNoHttp)
 			throw new HttpRequestException("Http is disabled via feature flag");
 
 		const int TypicalHttpHeaders = 8;
@@ -59,10 +59,10 @@ public partial class PTHttpClient
 		if (msg.Content != null)
 			foreach (var item in msg.Content.Headers)
 				headers.Add($"{item.Key}: {string.Join(", ", item.Value)}");
-				
+
 		string[] headersArray = [.. headers];
 
-		TaskCompletionSource<HttpResponseMessage> tcs = 
+		TaskCompletionSource<HttpResponseMessage> tcs =
 			new(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		// needs to be callable due to add_child
@@ -71,9 +71,10 @@ public partial class PTHttpClient
 			// Exceptions inside CallDeferred must be explicitly forwarded to the TCS
 			async Task RunAsync()
 			{
-				try {
-					byte[] body = msg.Content != null 
-						? await msg.Content.ReadAsByteArrayAsync() 
+				try
+				{
+					byte[] body = msg.Content != null
+						? await msg.Content.ReadAsByteArrayAsync()
 						: [];
 
 					HttpRequest req = new() { DownloadChunkSize = DefaultDownloadChunkSize };
@@ -91,7 +92,7 @@ public partial class PTHttpClient
 								new HttpRequestException($"Godot HttpRequest failed: {(HttpRequest.Result)result}"));
 							return;
 						}
-						
+
 						HttpResponseMessage response = new((HttpStatusCode)responseCode)
 						{
 							Content = new ByteArrayContent(responseBody)
@@ -112,7 +113,7 @@ public partial class PTHttpClient
 						req.QueueFree();
 						tcs.SetResult(response);
 					};
-					
+
 					ct.Register(() =>
 					{
 						req.CancelRequest();
@@ -121,7 +122,7 @@ public partial class PTHttpClient
 					});
 
 					Error error = req.RequestRaw(
-						msg.RequestUri?.ToString() 
+						msg.RequestUri?.ToString()
 							?? throw new InvalidOperationException("URL is null"),
 						headersArray,
 						Enum.Parse<Godot.HttpClient.Method>(
@@ -178,7 +179,7 @@ public partial class PTHttpClient
 	{
 		using HttpResponseMessage response = await GetAsync(url, ct);
 		response.EnsureSuccessStatusCode();
-		
+
 		return await response.Content.ReadAsByteArrayAsync(ct);
 	}
 
@@ -190,7 +191,7 @@ public partial class PTHttpClient
 		return SendAsync(msg, ct);
 	}
 
-	public Task<HttpResponseMessage> PostAsJsonAsync<T>(string url, T value, 
+	public Task<HttpResponseMessage> PostAsJsonAsync<T>(string url, T value,
 		JsonTypeInfo<T> jsonTypeInfo, CancellationToken ct = default)
 	{
 		string json = JsonSerializer.Serialize(value, jsonTypeInfo);

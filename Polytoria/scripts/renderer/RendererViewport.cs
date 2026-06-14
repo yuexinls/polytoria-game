@@ -28,7 +28,7 @@ public partial class RendererViewport : SubViewport
 		Msaa3D = Msaa.Msaa8X;
 		Size = new(800, 800);
 	}
-	
+
 	/// <summary>
 	/// This replaces the previous constructor body; it's called once after adding this node
 	/// to the tree
@@ -36,7 +36,7 @@ public partial class RendererViewport : SubViewport
 	public void Initialize()
 	{
 		Root = Globals.LoadInstance<World>();
-		
+
 		DatamodelBridge bridge = new() { Name = "DatamodelBridge" };
 		AddChild(bridge, true);
 
@@ -73,10 +73,10 @@ public partial class RendererViewport : SubViewport
 		npc.Parent = Root.Environment;
 		npc.UseNametag = false;
 		npc.GDNode3D.RotationDegrees = new(0, 15, 0);
-		
+
 		PolytorianModel ptm = (PolytorianModel)npc.Character!;
 		ptm.SetAnimationOverrideTo(true);
-		
+
 		AnimationPlayer ply = ptm.AnimTree.GetNode<AnimationPlayer>(ptm.AnimTree.AnimPlayer);
 		PolytorianModel.AvatarLoadResponse loadRes = await ptm.InternalLoadAppearance(id, loadToolNpc: true);
 
@@ -86,7 +86,7 @@ public partial class RendererViewport : SubViewport
 		}
 
 		await ptm.WaitForAppearanceLoad();
-		
+
 		// Resolve camera after all awaits bc CurrentCamera may change during load
 		Camera cam = Root.Environment.CurrentCamera!;
 		Camera3D c3d = cam.Camera3D;
@@ -114,7 +114,7 @@ public partial class RendererViewport : SubViewport
 		if (accessory == null) return;
 
 		accessory.Parent = Root.Environment;
-		
+
 		List<Task> pendingLoads = [];
 		foreach (Instance item in accessory.GetDescendants())
 		{
@@ -123,7 +123,7 @@ public partial class RendererViewport : SubViewport
 		}
 		if (pendingLoads.Count > 0)
 			await Task.WhenAll(pendingLoads);
-		
+
 		// same rationale as AddAvatar
 		Camera cam = Root.Environment.CurrentCamera!;
 		Camera3D c3d = cam.Camera3D;
@@ -137,12 +137,12 @@ public partial class RendererViewport : SubViewport
 	{
 		RenderTargetClearMode = ClearMode.Once;
 		RenderTargetUpdateMode = UpdateMode.Once;
-		
+
 		var _tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 		ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw)
 			.OnCompleted(() => _tcs.TrySetResult());
 		Task frameSignal = _tcs.Task;
-			
+
 		if (ct.CanBeCanceled)
 		{
 			Task cancelled = Task.Delay(Timeout.Infinite, ct);
@@ -154,18 +154,18 @@ public partial class RendererViewport : SubViewport
 		{
 			await frameSignal;
 		}
-		
+
 		Image img = GetTexture().GetImage();
 		img.FixAlphaEdges();
 		return img.SavePngToBuffer();
 	}
 
 	private static void FocusToBounds(
-		Node3D target, 
-		Camera3D cam, 
-		float yawDeg = 20f, 
-		float pitchDeg = -15f, 
-		float padding = 0.01f, 
+		Node3D target,
+		Camera3D cam,
+		float yawDeg = 20f,
+		float pitchDeg = -15f,
+		float padding = 0.01f,
 		Vector3? up = null)
 	{
 		if (target == null || cam == null)
@@ -208,7 +208,7 @@ public partial class RendererViewport : SubViewport
 
 		Vector3 forward = -viewBasis.Z;
 		Vector3 camPos = center - forward * distance;
-		
+
 		cam.GlobalTransform = new Transform3D(Basis.Identity, camPos).LookingAt(center, upVec);
 
 		cam.Near = MathF.Max(0.01f, distance - paddedR * 2f);
@@ -228,7 +228,7 @@ public partial class RendererViewport : SubViewport
 		while (stack.Count > 0)
 		{
 			Node n = stack.Pop();
-			
+
 			// GetChild(i) doesn't allocate
 			int childCount = n.GetChildCount();
 			for (int i = 0; i < childCount; i++)
@@ -245,33 +245,33 @@ public partial class RendererViewport : SubViewport
 	}
 
 	private static void EncapsulateTransformedAabb(
-		ref Vector3 min, 
-		ref Vector3 max, 
-		Aabb local, 
+		ref Vector3 min,
+		ref Vector3 max,
+		Aabb local,
 		Transform3D xf)
 	{
 		// World-space center of the aabb
 		Vector3 worldCenter = xf * (local.Position + local.Size * 0.5f);
-		
+
 		// Half size in local space
 		Vector3 h = local.Size * 0.5f;
-		
+
 		// We compute each world-axis half-extent by summing absolute dot
 		// products with the basis vectors. It's the same as transforming all
 		// corners but it's faster with only three dot products per axis.
 		Vector3 hx = xf.Basis.X * h.X;
 		Vector3 hy = xf.Basis.Y * h.Y;
 		Vector3 hz = xf.Basis.Z * h.Z;
-		
+
 		Vector3 worldHalf = new(
 			MathF.Abs(hx.X) + MathF.Abs(hy.X) + MathF.Abs(hz.X),
 			MathF.Abs(hx.Y) + MathF.Abs(hy.Y) + MathF.Abs(hz.Y),
 			MathF.Abs(hx.Z) + MathF.Abs(hy.Z) + MathF.Abs(hz.Z)
 		);
-		
+
 		Vector3 wMin = worldCenter - worldHalf;
 		Vector3 wMax = worldCenter + worldHalf;
-		
+
 		if (wMin.X < min.X) min.X = wMin.X;
 		if (wMin.Y < min.Y) min.Y = wMin.Y;
 		if (wMin.Z < min.Z) min.Z = wMin.Z;

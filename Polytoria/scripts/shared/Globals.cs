@@ -66,25 +66,25 @@ public sealed partial class Globals : Node
 	private static readonly Dictionary<string, (Mesh, Shape3D)> _shapesCache = [];
 	private static readonly Dictionary<string, Material> _skyboxesCache = [];
 	private static readonly Dictionary<(Part.PartMaterialEnum, bool), Material> _materialCache = [];
-	
+
 	// ConditionalWeakTable keeps its keys weakly and is actually designed for attaching
 	// temporary metadata to objects; so it's not the right choice for a permanent cache.
 	private static readonly Dictionary<string, Type> _typesCache = [];
-	
+
 	private static readonly Dictionary<string, string> _platformExtensions = new()
 	{
 		["windows"] = "dll",
-		["macos"]   = "dylib",
-		["linux"]   = "so",
+		["macos"] = "dylib",
+		["linux"] = "so",
 	};
-	
+
 	private static readonly Dictionary<string, string> _libraryPaths = new()
 	{
 		["discord_game_sdk"] = "native/discord",
-		["Luau.Compiler"]    = "native/Luau.Compiler",
-		["Luau.VM"]          = "native/Luau.VM",
+		["Luau.Compiler"] = "native/Luau.Compiler",
+		["Luau.VM"] = "native/Luau.VM",
 	};
-	
+
 	private static string? _resolvedPlatform;
 
 	private static bool _isExiting = false;
@@ -172,7 +172,7 @@ public sealed partial class Globals : Node
 		GDAvailable = true;
 
 		_resolvedPlatform = ResolveCurrentPlatform();
-		
+
 		AppVersion = (string)ProjectSettings.GetSetting("application/config/version");
 #if !PRODUCTION
 		AppVersion += "+dev";
@@ -277,10 +277,10 @@ public sealed partial class Globals : Node
 	{
 		Type? type = GetTypeByName(className);
 		if (type == null) return null;
-		
+
 		object? obj = Activator.CreateInstance(type);
 		if (obj is not NetworkedObject netObj) return null;
-		
+
 		netObj.NameOverride = className;
 		preInit?.Invoke(netObj);
 		netObj.Root = root!;
@@ -294,7 +294,7 @@ public sealed partial class Globals : Node
 		if (scene != null) scene.SceneFilePath = "";
 		return scene;
 	}
-	
+
 	/// <summary>
 	/// Load and cache a scene by its resource path.
 	/// </summary>
@@ -305,7 +305,7 @@ public sealed partial class Globals : Node
 			scene = ResourceLoader.Load<PackedScene>(path, null, ResourceLoader.CacheMode.IgnoreDeep);
 			_scenesCache[path] = scene;
 		}
-		
+
 		return scene.Instantiate<T>();
 	}
 
@@ -355,7 +355,7 @@ public sealed partial class Globals : Node
 		}
 
 		string path = $"{ShapesMeshesPath}{shapeName}.tres";
-		Mesh mesh = ResourceLoader.Load<Mesh>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+		Mesh mesh = ResourceLoader.Load<Mesh>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep)
 			?? throw new KeyNotFoundException($"Shape '{shapeName}' was not found at '{path}'.");
 		Shape3D shape = CreateShape(mesh, shapeName);
 		(Mesh, Shape3D) loadedShape = (mesh, shape);
@@ -372,12 +372,12 @@ public sealed partial class Globals : Node
 			return mat;
 		}
 
-		mat = ResourceLoader.Load<Material>($"res://resources/materials/parts/{material}.tres", 
+		mat = ResourceLoader.Load<Material>($"res://resources/materials/parts/{material}.tres",
 			cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
 		if (!isOpaque && mat is ShaderMaterial shadMat && shadMat.Shader.ResourcePath.EndsWith("part.gdshader"))
 		{
 			Shader shader = ResourceLoader.Load<Shader>(
-				"res://resources/shaders/part/part_transparent.gdshader", 
+				"res://resources/shaders/part/part_transparent.gdshader",
 				cacheMode: ResourceLoader.CacheMode.IgnoreDeep);
 			shadMat.Shader = shader;
 		}
@@ -399,7 +399,7 @@ public sealed partial class Globals : Node
 	public static Material LoadSkybox(string materialName)
 		=> ForceLoadResource(_skyboxesCache, materialName, $"{SkyboxesPath}{materialName}.tres");
 
-	private static TResource? LoadCachedResource<TResource>(Dictionary<string, TResource> cache, string key, string path) 
+	private static TResource? LoadCachedResource<TResource>(Dictionary<string, TResource> cache, string key, string path)
 		where TResource : Resource
 	{
 		if (cache.TryGetValue(key, out TResource? cachedResource))
@@ -412,15 +412,15 @@ public sealed partial class Globals : Node
 			return null;
 		}
 
-		TResource resource = ResourceLoader.Load<TResource>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+		TResource resource = ResourceLoader.Load<TResource>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep)
 			?? throw new InvalidOperationException($"Failed to load resource at '{path}'.");
 		cache[key] = resource;
 		return resource;
 	}
 
-	private static TResource ForceLoadResource<TResource>(Dictionary<string, TResource> cache, string key, string path) 
+	private static TResource ForceLoadResource<TResource>(Dictionary<string, TResource> cache, string key, string path)
 		where TResource : Resource
-		=> LoadCachedResource(cache, key, path) 
+		=> LoadCachedResource(cache, key, path)
 			?? throw new KeyNotFoundException($"Resource '{key}' was not found at '{path}'.");
 
 	private static Texture2D LoadCachedTexture(Dictionary<string, Texture2D> cache, string key, string directoryPath, string fallbackKey)
@@ -443,7 +443,7 @@ public sealed partial class Globals : Node
 			return fallbackTexture;
 		}
 
-		Texture2D texture = ResourceLoader.Load<Texture2D>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep) 
+		Texture2D texture = ResourceLoader.Load<Texture2D>(path, cacheMode: ResourceLoader.CacheMode.IgnoreDeep)
 			?? throw new InvalidOperationException($"Failed to load texture at '{path}'.");
 		cache[key] = texture;
 		return texture;
@@ -493,7 +493,7 @@ public sealed partial class Globals : Node
 			string arg = args[i];
 
 			if (!arg.StartsWith('-')) continue;
-			
+
 			string key = arg.TrimStart('-');
 			string value = "";
 
@@ -544,7 +544,7 @@ public sealed partial class Globals : Node
 		ToSignal(GetTree(), SceneTree.SignalName.PhysicsFrame).OnCompleted(() => tcs.TrySetResult());
 		return tcs.Task;
 	}
-	
+
 	/// <summary>
 	/// Declared async Task internally; basically the public void entry point makes sure
 	/// that any unseen exception is at least logged instead of being silently dropped.
@@ -561,7 +561,7 @@ public sealed partial class Globals : Node
 			GetTree().Quit(code);
 		}
 	}
-	
+
 	public async Task QuitAsync(bool force, int code)
 	{
 #if CREATOR
@@ -584,7 +584,7 @@ public sealed partial class Globals : Node
 		{
 			PT.PrintWarn("Error present when quitting: ", ex);
 		}
-		
+
 		// QueueFree already defers the actual freeing process until the end of the frame,
 		// so just a single CallDeferred for Quit() is enough.
 		CurrentAppEntryNode?.QueueFree();
@@ -685,13 +685,13 @@ public sealed partial class Globals : Node
 	{
 		if (!_libraryPaths.TryGetValue(libraryName, out string? pathBase))
 			return null;
-			
+
 		if (!_platformExtensions.TryGetValue(platform, out string? ext))
 			return null;
-			
+
 		if (!IsInGDEditor)
 			return $"{libraryName}.{ext}";
-			
+
 		return IsServerBuild
 			? $"native/{platform}/{libraryName}.{ext}"
 			: $"{pathBase}/{platform}/{libraryName}.{ext}";

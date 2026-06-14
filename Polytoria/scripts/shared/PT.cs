@@ -21,7 +21,7 @@ public static class PT
 	{
 		OwnerThreadId = System.Environment.CurrentManagedThreadId;
 	}
-	
+
 	/// <summary>
 	/// Joins a params array into one single string without creating any extra
 	/// allocations for the single-element case
@@ -30,14 +30,14 @@ public static class PT
 	{
 		if (parts.Length == 1)
 			return parts[0]?.ToString() ?? string.Empty;
-			
+
 		// StringBuilder avoids O(n²) string allocations
 		StringBuilder sb = new();
 		foreach (object? part in parts)
 			sb.Append(part);
 		return sb.ToString();
 	}
-	
+
 	/// <summary>
 	/// Raw print to GD or console fallback
 	/// </summary>
@@ -64,8 +64,8 @@ public static class PT
 			string prefix = logType switch
 			{
 				LogDispatcher.LogTypeEnum.Warning => "[WARN] ",
-				LogDispatcher.LogTypeEnum.Error   => "[ERROR] ",
-				_                                 => "[WARN] ",
+				LogDispatcher.LogTypeEnum.Error => "[ERROR] ",
+				_ => "[WARN] ",
 			};
 			Console.WriteLine(prefix + message);
 		}
@@ -77,7 +77,7 @@ public static class PT
 		WriteOutput(message, LogDispatcher.LogTypeEnum.Info);
 		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Info });
 	}
-	
+
 	public static void Print(params object?[] str)
 	{
 		string message = BuildMessage(str);
@@ -91,7 +91,7 @@ public static class PT
 	/// </summary>
 	public static void PrintV(string message)
 		=> WriteOutput(message, LogDispatcher.LogTypeEnum.Info);
-		
+
 	public static void PrintV(params object?[] str)
 		=> WriteOutput(BuildMessage(str), LogDispatcher.LogTypeEnum.Info);
 
@@ -100,14 +100,14 @@ public static class PT
 		WriteOutput(message, LogDispatcher.LogTypeEnum.Warning);
 		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Warning });
 	}
-	
+
 	public static void PrintWarn(params object?[] str)
 	{
 		string message = BuildMessage(str);
 		WriteOutput(message, LogDispatcher.LogTypeEnum.Warning);
 		DispatchLog(new() { Content = message, LogType = LogDispatcher.LogTypeEnum.Warning });
 	}
-	
+
 	public static void PrintErr(string message)
 	{
 		WriteOutput(message, LogDispatcher.LogTypeEnum.Error);
@@ -127,7 +127,7 @@ public static class PT
 	/// <param name="str"></param>
 	public static void PrintErrV(string message)
 		=> WriteOutput(message, LogDispatcher.LogTypeEnum.Error);
-	
+
 	public static void PrintErrV(params object?[] str)
 		=> WriteOutput(BuildMessage(str), LogDispatcher.LogTypeEnum.Error);
 
@@ -154,7 +154,7 @@ public static class PT
 
 	public static bool IsMainThread()
 		=> System.Environment.CurrentManagedThreadId == OwnerThreadId;
-	
+
 	public static void CallOnMainThread(Action a)
 	{
 		if (IsMainThread() || !Globals.GDAvailable)

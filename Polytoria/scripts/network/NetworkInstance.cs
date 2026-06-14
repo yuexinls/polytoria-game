@@ -24,16 +24,16 @@ public class NetworkInstance
 	private const int BandwidthOutLimit = 30 * 1024;
 	private const int BandwidthPerPlayer = 200 * 1024; // 200 KB/s per player
 	private const int DefaultCapacity = 67;
-	private const int DefaultPort = 21441;
+	private const int DefaultPort = 24221;
 	private const int MinimumTimeout = 5;
 	private const int ErrorBackoffMs = 100; // cooldown after a loop exception
-	
+
 	// They're written by the network thread, and read by the main thread, so they must be volatile.
 	private volatile bool _isSilence = false;
 	private volatile bool _shutdown = false;
-	
-	private long _lastMessageTicks = DateTime.UtcNow.Ticks;
-	
+
+	private long _lastMessageTicks;
+
 	// It's only accessed from the main thread (DrainEvents + VerifyDataServerToken)
 	// If VerifyDataServerToken is ever called off-thread, then we'd switch to ConcurrentDictionary
 	private readonly Dictionary<int, string> _dataServerTokens = [];
@@ -41,7 +41,7 @@ public class NetworkInstance
 	private readonly ENetConnection _peer;
 	private readonly ConcurrentQueue<Action> _actionQueue = new();
 	private readonly ConcurrentQueue<DeferredNetworkEvent> _mainThreadEventQueue = new();
-	
+
 	internal readonly ConcurrentDictionary<int, ENetPacketPeer> IdToPeer = [];
 	internal readonly ConcurrentDictionary<ENetPacketPeer, int> PeerToId = [];
 
@@ -49,10 +49,10 @@ public class NetworkInstance
 	private int _peerCounter = 1;
 
 	public ICollection<int> PeerIds => IdToPeer.Keys;
-	
+
 	/// <summary>True when no message has been received for SilenceTimeoutSeconds (client only)</summary>
 	public bool IsSilence => _isSilence;
-	
+
 	public bool IsServer { get; private set; } = false;
 
 	public event Action<int>? PeerConnected;
@@ -85,7 +85,7 @@ public class NetworkInstance
 	public Task CreateClient(string address, int port, int maxChannels = 3)
 	{
 		Error e = _peer.CreateHost(DefaultCapacity, maxChannels);
-		_peer.BandwidthLimit(BandwidthInLimit, BandwidthOutLimit);
+		_peer.BandwidthLimit(0, 0); // BandwidthInLimit, BandwidthOutLimit
 		_peer.Compress(CompressionMode);
 
 		if (e != Error.Ok)
@@ -108,15 +108,15 @@ public class NetworkInstance
 		// TODO: TEMP FIX, unlimit out bandwidth (yes)
 		_peer.BandwidthLimit(0, 0);
 	}
-	
+
 	public void Shutdown()
 	{
 		if (_shutdown) return;
 		_shutdown = true;
-		
+
 		foreach ((_, ENetPacketPeer pk) in IdToPeer)
 			pk.PeerDisconnect();
-			
+
 		_peer.Flush();
 		_peer.Destroy();
 	}
@@ -125,14 +125,16 @@ public class NetworkInstance
 	{
 		_ = Task.Run(NetworkLoop);
 	}
-	
+
 	// Background thread
 	private void NetworkLoop()
 	{
+		Interlocked.Exchange(ref _lastMessageTicks, DateTime.UtcNow.Ticks);
+		
 		while (!_shutdown)
 		{
 			if (!GodotObject.IsInstanceValid(_peer)) return;
-			
+
 			try
 			{
 				ProcessActionQueue();
@@ -143,7 +145,7 @@ public class NetworkInstance
 			catch (Exception ex)
 			{
 				GD.PushError("NetworkLoop exception: ", ex);
-				
+
 				// Backoff before retry; this prevents a bad-state exception from 
 				// pinning the CPU at 100% with log spam
 				if (!_shutdown)
@@ -166,7 +168,7 @@ public class NetworkInstance
 
 	public ENetPacketPeer? GetPacketPeerFromId(int id)
 		=> IdToPeer.TryGetValue(id, out ENetPacketPeer? p) ? p : null;
-		
+
 	public bool IsPeerConnected(int peerID)
 		=> IdToPeer.ContainsKey(peerID);
 
@@ -208,15 +210,15 @@ public class NetworkInstance
 			}
 		});
 	}
-	
+
 	/// <summary>
 	/// Broadcast to all active peers (optionally skipping a set of peer IDs)
 	/// It uses HashSet for O(1) exclusion lookup instead of an O(n) array scan
 	/// </summary>
 	public void BroadcastMessage(
-		byte[] data, 
-		TransferMode transferMode, 
-		int transferChannel = 0, 
+		byte[] data,
+		TransferMode transferMode,
+		int transferChannel = 0,
 		HashSet<int>? except = null)
 	{
 		_actionQueue.Enqueue(() =>
@@ -229,10 +231,10 @@ public class NetworkInstance
 			}
 		});
 	}
-	
+
 	public double PopStatistic(ENetConnection.HostStatistic hs)
 		=> _peer.PopStatistic(hs);
-		
+
 	private void ProcessActionQueue()
 	{
 		while (_actionQueue.TryDequeue(out Action? action))
@@ -247,7 +249,7 @@ public class NetworkInstance
 			}
 		}
 	}
-	
+
 	private void ProcessNetwork()
 	{
 		Godot.Collections.Array serviceData = _peer.Service(MinimumTimeout);
@@ -256,83 +258,83 @@ public class NetworkInstance
 			ENetConnection.EventType eventType = (ENetConnection.EventType)(int)serviceData[0];
 			if (eventType == ENetConnection.EventType.None)
 				return; // break before allocating another Service() result
-			
+
 			ENetPacketPeer? fromPeer = (ENetPacketPeer?)serviceData[1];
 			int peerID = 0;
-			
+
 			if (fromPeer != null)
 				PeerToId.TryGetValue(fromPeer, out peerID);
 
 			switch (eventType)
 			{
 				case ENetConnection.EventType.Connect:
-				{
-					if (fromPeer == null) 
-					{ 
-						PT.PrintWarn("Connect received but peer is null, return");
-						return; 
-					}
-
-					peerID = IsServer ? Interlocked.Increment(ref _peerCounter) : 1;
-					IdToPeer[peerID] = fromPeer;
-					PeerToId[fromPeer] = peerID;
-					
-					EnqueueEvent(IsServer
-						? new PeerConnectedEvent(peerID)
-						: new ClientConnectedEvent());
-					break;
-				}
-				case ENetConnection.EventType.Disconnect:
-				{
-					if (fromPeer == null)
-					{ 
-						PT.PrintWarn("Disconnect received but peer is null, return"); 
-						return; 
-					}
-					
-					IdToPeer.TryRemove(peerID, out _);
-					PeerToId.TryRemove(fromPeer, out _);
-					
-					EnqueueEvent(IsServer
-						? new PeerDisconnectedEvent(peerID)
-						: new ClientDisconnectedEvent());
-					break;
-				}
-				case ENetConnection.EventType.Receive:
-				{
-					Interlocked.Exchange(ref _lastMessageTicks, DateTime.UtcNow.Ticks);
-					
-					if (fromPeer == null) 
-					{ 
-						PT.PrintWarn("Message received but peer is null, return"); 
-						return; 
-					}
-					
-					while (fromPeer.GetAvailablePacketCount() > 0)
 					{
-						int pkf = fromPeer.GetPacketFlags();
-						TransferMode m = pkf switch
+						if (fromPeer == null)
 						{
-							(int)ENetPacketPeer.FlagReliable => TransferMode.Reliable,
-							(int)ENetPacketPeer.FlagUnreliableFragment => TransferMode.UnreliableOrdered,
-							(int)ENetPacketPeer.FlagUnsequenced => TransferMode.Unreliable,
-							_ => TransferMode.Unreliable,
-						};
-						byte[] data = fromPeer.GetPacket();
-						EnqueueEvent(new MessageReceivedEvent(peerID, data, m));
+							PT.PrintWarn("Connect received but peer is null, return");
+							return;
+						}
+
+						peerID = IsServer ? Interlocked.Increment(ref _peerCounter) : 1;
+						IdToPeer[peerID] = fromPeer;
+						PeerToId[fromPeer] = peerID;
+
+						EnqueueEvent(IsServer
+							? new PeerConnectedEvent(peerID)
+							: new ClientConnectedEvent());
+						break;
 					}
-					break;
-				}
+				case ENetConnection.EventType.Disconnect:
+					{
+						if (fromPeer == null)
+						{
+							PT.PrintWarn("Disconnect received but peer is null, return");
+							return;
+						}
+
+						IdToPeer.TryRemove(peerID, out _);
+						PeerToId.TryRemove(fromPeer, out _);
+
+						EnqueueEvent(IsServer
+							? new PeerDisconnectedEvent(peerID)
+							: new ClientDisconnectedEvent());
+						break;
+					}
+				case ENetConnection.EventType.Receive:
+					{
+						Interlocked.Exchange(ref _lastMessageTicks, DateTime.UtcNow.Ticks);
+
+						if (fromPeer == null)
+						{
+							PT.PrintWarn("Message received but peer is null, return");
+							return;
+						}
+
+						while (fromPeer.GetAvailablePacketCount() > 0)
+						{
+							int pkf = fromPeer.GetPacketFlags();
+							TransferMode m = pkf switch
+							{
+								(int)ENetPacketPeer.FlagReliable => TransferMode.Reliable,
+								(int)ENetPacketPeer.FlagUnreliableFragment => TransferMode.UnreliableOrdered,
+								(int)ENetPacketPeer.FlagUnsequenced => TransferMode.Unreliable,
+								_ => TransferMode.Unreliable,
+							};
+							byte[] data = fromPeer.GetPacket();
+							EnqueueEvent(new MessageReceivedEvent(peerID, data, m));
+						}
+						break;
+					}
 				case ENetConnection.EventType.Error:
 					PT.PrintErr("ENet connection error");
 					EnqueueEvent(new ClientErrorEvent(NetInstanceErrorEnum.NetworkError));
 					return;
 			}
-			
+
 			serviceData = _peer.Service(0);
 		}
 	}
-	
+
 	private void CheckSilence()
 	{
 		// Only check silence in client
@@ -341,27 +343,34 @@ public class NetworkInstance
 		long lastTicks = Interlocked.Read(ref _lastMessageTicks);
 		double elapsedSeconds = (DateTime.UtcNow.Ticks - lastTicks) / (double)TimeSpan.TicksPerSecond;
 		bool currentlySilent = elapsedSeconds > SilenceTimeoutSeconds;
-		
+
 		if (currentlySilent == _isSilence) return;
 
 		_isSilence = currentlySilent;
-		
+
 		if (_isSilence)
 			PT.PrintErr("[!] Network connection has gone silent");
 		else
 			PT.Print("[i] Network connection resumed.");
 	}
-	
+
 	private void EnqueueEvent(DeferredNetworkEvent e)
 	{
 		_mainThreadEventQueue.Enqueue(e);
-		
+
 		if (Interlocked.CompareExchange(ref _mainThreadDrainScheduled, 1, 0) == 0)
 			Callable.From(DrainEvents).CallDeferred();
 	}
 
 	private void DrainEvents()
 	{
+		if (_shutdown)
+		{
+			_mainThreadEventQueue.Clear();
+			Interlocked.Exchange(ref _mainThreadDrainScheduled, 0);
+			return;
+		}
+		
 		while (_mainThreadEventQueue.TryDequeue(out DeferredNetworkEvent? e))
 		{
 			switch (e)
@@ -371,24 +380,24 @@ public class NetworkInstance
 					_dataServerTokens[connected.PeerID] = Guid.NewGuid().ToString("N");
 					PeerConnected?.Invoke(connected.PeerID);
 					break;
-					
+
 				case PeerDisconnectedEvent disconnected:
 					_dataServerTokens.Remove(disconnected.PeerID);
 					PeerDisconnected?.Invoke(disconnected.PeerID);
 					break;
-					
+
 				case ClientConnectedEvent:
 					ClientConnected?.Invoke();
 					break;
-					
+
 				case ClientDisconnectedEvent:
 					ClientDisconnected?.Invoke();
 					break;
-					
+
 				case ClientErrorEvent error:
 					ClientError?.Invoke(error.Error);
 					break;
-					
+
 				case MessageReceivedEvent msg:
 					MessageReceived?.Invoke(msg.PeerID, msg.Data, msg.TransferMode);
 					break;
@@ -401,9 +410,9 @@ public class NetworkInstance
 			Callable.From(DrainEvents).CallDeferred();
 		}
 	}
-	
+
 	public delegate void MessageReceivedHandler(int peerID, byte[] data, TransferMode transferMode);
-	
+
 	public enum NetInstanceErrorEnum
 	{
 		DataChannelConnectFailure,
